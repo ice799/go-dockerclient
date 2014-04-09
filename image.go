@@ -36,6 +36,13 @@ var (
 	ErrMissingOutputStream = errors.New("Missing output stream")
 )
 
+type jsonMessage struct {
+	Status   string `json:"status,omitempty"`
+	Progress string `json:"progress,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Stream   string `json:"stream,omitempty"`
+}
+
 // ListImages returns the list of available images in the server.
 //
 // See http://goo.gl/dkMrwP for more details.
@@ -109,6 +116,29 @@ type AuthConfiguration struct {
 	Email    string `json:"email,omitempty"`
 }
 
+func jsonStatusParse(buf io.Reader, out io.Writer) error {
+	dec := json.NewDecoder(buf)
+	for {
+		var m jsonMessage
+		if err := dec.Decode(&m); err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+		if m.Stream != "" {
+			fmt.Fprint(out, m.Stream)
+		} else if m.Progress != "" {
+			fmt.Fprintf(out, "%s %s\r", m.Status, m.Progress)
+		} else if m.Error != "" {
+			return errors.New(m.Error)
+		} else {
+			fmt.Fprintln(out, m.Status)
+		}
+	}
+
+	return nil
+}
+
 // PushImage pushes an image to a remote registry, logging progress to w.
 //
 // An empty instance of AuthConfiguration may be used for unauthenticated
@@ -128,7 +158,13 @@ func (c *Client) PushImage(opts PushImageOptions, auth AuthConfiguration) error 
 
 	headers["X-Registry-Auth"] = base64.URLEncoding.EncodeToString(buf.Bytes())
 
-	return c.stream("POST", path, headers, nil, opts.OutputStream)
+	var outbuf bytes.Buffer
+	err := c.stream("POST", path, headers, nil, &outbuf)
+	if err != nil {
+		return err
+	}
+
+	return jsonStatusParse(&outbuf, opts.OutputStream)
 }
 
 // PullImageOptions present the set of options available for pulling an image
@@ -159,7 +195,14 @@ func (c *Client) PullImage(opts PullImageOptions, auth AuthConfiguration) error 
 
 func (c *Client) createImage(qs string, headers map[string]string, in io.Reader, w io.Writer) error {
 	path := "/images/create?" + qs
-	return c.stream("POST", path, headers, in, w)
+
+	var outbuf bytes.Buffer
+	err := c.stream("POST", path, headers, in, &outbuf)
+	if err != nil {
+		return err
+	}
+
+	return jsonStatusParse(&outbuf, w)
 }
 
 // ImportImageOptions present the set of informations available for importing
@@ -224,8 +267,15 @@ func (c *Client) BuildImage(opts BuildImageOptions) error {
 	} else if opts.Remote == "" {
 		return ErrMissingRepo
 	}
-	return c.stream("POST", fmt.Sprintf("/build?%s",
-		queryString(&opts)), headers, opts.InputStream, opts.OutputStream)
+
+	var outbuf bytes.Buffer
+	err := c.stream("POST", fmt.Sprintf("/build?%s",
+		queryString(&opts)), headers, opts.InputStream, &outbuf)
+	if err != nil {
+		return err
+	}
+
+	return jsonStatusParse(&outbuf, opts.OutputStream)
 }
 
 func isUrl(u string) bool {

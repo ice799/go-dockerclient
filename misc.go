@@ -6,6 +6,7 @@ package docker
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/fsouza/go-dockerclient/engine"
 	"io"
 )
@@ -27,6 +28,33 @@ func (c *Client) Version() (*engine.Env, error) {
 		return nil, err
 	}
 	return remoteVersion, nil
+}
+
+type EventStreamMessage struct {
+	Status string
+	Id     string
+	From   string
+	Time   uint64
+}
+
+func (c *Client) Events(outchan chan EventStreamMessage) error {
+	var outbuf bytes.Buffer
+	go func(outchan chan EventStreamMessage) {
+		c.stream("GET", "/events", nil, nil, &outbuf)
+		dec := json.NewDecoder(&outbuf)
+		for {
+			var m EventStreamMessage
+			if err := dec.Decode(&m); err == io.EOF {
+				close(outchan)
+				break
+			} else if err != nil {
+				break
+			}
+			outchan <- m
+		}
+	}(outchan)
+
+	return nil
 }
 
 // Info returns system-wide information, like the number of running containers.

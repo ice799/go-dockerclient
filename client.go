@@ -145,6 +145,7 @@ func (c *Client) stream(method, path string, headers map[string]string, in io.Re
 		return err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
@@ -152,30 +153,25 @@ func (c *Client) stream(method, path string, headers map[string]string, in io.Re
 		}
 		return newError(resp.StatusCode, body)
 	}
-	if resp.Header.Get("Content-Type") == "application/json" {
-		dec := json.NewDecoder(resp.Body)
+
+	go func() {
+		buf := make([]byte, 1024)
 		for {
-			var m jsonMessage
-			if err := dec.Decode(&m); err == io.EOF {
+			bytes_read, err := resp.Body.Read(buf)
+
+			if bytes_read != 0 {
+				_, err := out.Write(buf)
+				if err != nil {
+					break
+				}
+			}
+
+			if err != nil {
 				break
-			} else if err != nil {
-				return err
-			}
-			if m.Stream != "" {
-				fmt.Fprint(out, m.Stream)
-			} else if m.Progress != "" {
-				fmt.Fprintf(out, "%s %s\r", m.Status, m.Progress)
-			} else if m.Error != "" {
-				return errors.New(m.Error)
-			} else {
-				fmt.Fprintln(out, m.Status)
 			}
 		}
-	} else {
-		if _, err := io.Copy(out, resp.Body); err != nil {
-			return err
-		}
-	}
+	}()
+
 	return nil
 }
 
@@ -235,13 +231,6 @@ func (c *Client) getURL(path string) string {
 		urlStr = ""
 	}
 	return fmt.Sprintf("%s%s", urlStr, path)
-}
-
-type jsonMessage struct {
-	Status   string `json:"status,omitempty"`
-	Progress string `json:"progress,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Stream   string `json:"stream,omitempty"`
 }
 
 func queryString(opts interface{}) string {
